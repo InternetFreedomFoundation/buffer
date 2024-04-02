@@ -1,0 +1,16 @@
+name = "buffer"
+main = "src/index.ts"
+compatibility_date = "2024-01-29"
+compatibility_flags = ["nodejs_compat"]
+
+# Variable bindings. These are arbitrary, plaintext strings (similar to environment variables)
+# Note: Use secrets to store sensitive data.
+# Docs: https://developers.cloudflare.com/workers/platform/environment-variables
+# [vars]
+# MY_VARIABLE = "production_value"
+
+# Bind a KV Namespace. Use KV as persistent storage for small key-value pairs.
+# Docs: https://developers.cloudflare.com/workers/runtime-apis/kv
+kv_namespaces = [
+    { binding = "ghost_build", id = "611f80415f684d2c80b25e6cd7af5c7a" },
+]
