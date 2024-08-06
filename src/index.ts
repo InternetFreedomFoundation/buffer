@@ -1,5 +1,10 @@
 import { createHmac } from 'node:crypto';
 
+interface GhostSignature {
+	sha256: string;
+	t: string;
+}
+
 export interface Env {
 	ghost_build: KVNamespace;
 	CF_HOOK: string;
@@ -89,10 +94,13 @@ async function triggerBuild(env: Env, timestamp: string) {
 // checkSignature function checks if the signature is valid and returns a boolean
 async function checkSignature(secret: string, signature: string, req: Request): Promise<Boolean> {
 	const payload = await req.json();
-	const [externalHmac, timestamp] = signature.split(',');
-	const hmac = createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');
+	const { sha256:hash, t:timestamp} = signature
+		.split(', ')
+		.map((x) => x.split('='))
+		.reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {}) as GhostSignature
+	const hmac = createHmac('sha256', secret).update(`${JSON.stringify(payload)}${timestamp}`).digest('hex');
 	console.log('Computed HMAC', hmac);
 	console.log('Request Timestamp', timestamp);
-	console.log('External HMAC', externalHmac);
-	return `sha256=${hmac}` === externalHmac;
+	console.log('External HMAC', hash);
+	return hmac === hash;
 }
