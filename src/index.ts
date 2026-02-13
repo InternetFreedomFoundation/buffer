@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { DurableObject } from "cloudflare:workers";
 
 interface GhostSignature {
 	sha256: string;
@@ -6,17 +7,12 @@ interface GhostSignature {
 }
 
 export interface Env {
-	ghost_build: KVNamespace;
 	CF_HOOK: string;
 	GHOST_WH_SECRET: string;
+	BUFFER: DurableObjectNamespace<Buffer>;
 }
 
-export interface metadata {
-	last_build_triggered_at: string;
-	hook_status: string;
-}
-
-const COOLING_PERIOD = 1000 * 25;
+const COOLING_PERIOD = 2 * 60 * 1000;
 
 export default {
 	async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -33,68 +29,35 @@ export default {
 		}
 		console.log("Signature Verified, Valid Request")
 
-		let { value, metadata } = await env.ghost_build.getWithMetadata<metadata>('timestamp');
-		if (value == null) {
-			value = Date.now().toString();
-			await env.ghost_build.put('timestamp', value);
-		}
-		const timestamp = parseInt(value);
+		let stub = env.BUFFER.getByName("build");
+		let res = await stub.triggerBuild()
 
-		if (currentTime < timestamp + COOLING_PERIOD) {
+		if (!res.enqueued) {
 			console.log('Build already in queue');
 			return new Response(
 				JSON.stringify({
 					message: 'Build already in queue',
 					current_timestamp: currentTime,
-					last_build: timestamp,
-					time_remaining: timestamp + COOLING_PERIOD - currentTime,
-					metadata: {
-						last_build_triggered_at: metadata?.last_build_triggered_at,
-						hook_status: metadata?.hook_status,
-					},
+					current_alarm: res.alarm,
 				}),
 			);
 		}
-
-		await env.ghost_build.put('timestamp', currentTime.toString(), {
-			metadata: metadata,
-		});
-		ctx.waitUntil(triggerBuild(env, currentTime.toString()));
 		console.log('New Build enqued');
 		return new Response(
 			JSON.stringify({
 				message: 'New Build enqued',
 				current_timestamp: currentTime,
-				last_build: timestamp,
 				time_remaining: COOLING_PERIOD,
-				metadata: {
-					last_build_triggered_at: metadata?.last_build_triggered_at,
-					hook_status: metadata?.hook_status,
-				},
+				current_alarm: res.alarm,
 			}),
 		);
 	},
 };
 
-async function triggerBuild(env: Env, timestamp: string) {
-	console.log('Queue triggered');
-	await new Promise((r) => setTimeout(r, COOLING_PERIOD));
-	const res = await fetch(env.CF_HOOK, {
-		method: 'POST',
-	});
-	await env.ghost_build.put('timestamp', timestamp, {
-		metadata: <metadata>{
-			last_build_triggered_at: Date.now().toString(),
-			hook_status: res.statusText,
-		},
-	});
-	console.log('Queue processed');
-}
-
 // checkSignature function checks if the signature is valid and returns a boolean
 async function checkSignature(secret: string, signature: string, req: Request): Promise<Boolean> {
 	const payload = await req.json();
-	const { sha256:hash, t:timestamp} = signature
+	const { sha256: hash, t: timestamp } = signature
 		.split(', ')
 		.map((x) => x.split('='))
 		.reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {}) as GhostSignature
@@ -104,3 +67,27 @@ async function checkSignature(secret: string, signature: string, req: Request): 
 	console.log('External HMAC', hash);
 	return hmac === hash;
 }
+
+export class Buffer extends DurableObject<Env> {
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, env);
+	}
+
+	async triggerBuild(): Promise<{ enqueued: boolean; alarm: number | null }> {
+		let currentAlarm = await this.ctx.storage.getAlarm();
+		if (currentAlarm == null) {
+			this.ctx.storage.setAlarm(Date.now() + COOLING_PERIOD);
+			return { enqueued: true, alarm: currentAlarm }
+		}
+		return { enqueued: false, alarm: currentAlarm }
+	}
+
+	async alarm() {
+		console.log('Alarm triggered at', Date.now());
+		let res = await fetch(this.env.CF_HOOK, {
+			method: "POST"
+		});
+		console.log('CF_HOOK response status:', res.status);
+	}
+}
+
